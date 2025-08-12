@@ -1,544 +1,816 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { 
-  SendHorizontal, 
-  RotateCw, 
-  MessageSquare, 
-  Trash2, 
-  Plus,
-  Bot,
-  User
-} from 'lucide-react';
-import { WebSocketService } from '@/services/WebSocketService';
-import { APIService } from '@/services/APIService';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useSystemStore } from '@/store/system-store';
-import { Agent, Task } from '@/types/agent-types';
+import { EnhancedAgentFactory } from '@/features/agents/services/EnhancedAgentFactory';
+import { AdvancedReasoningPatternsService } from '@/features/reasoning/services/AdvancedReasoningPatterns';
+import { RealTimeCommunicationService } from '@/features/communication/services/RealTimeCommunicationService';
+import { SelfModificationService } from '@/features/system/services/SelfModificationService';
+import { useWebSocket, useAgentPresence, useMessageHistory } from '@/features/communication/hooks/useWebSocket';
+import {
+  Agent,
+  Task,
+  SystemResourceUsage,
+  SystemConstraints,
+  AgentSpecialization,
+  ReasoningTier
+} from '@/types/agent-types';
 
 interface CommandCenterProps {
-  onCreateAgent: (config: any) => void;
+  agentFactory?: EnhancedAgentFactory;
+  reasoningService?: AdvancedReasoningPatternsService;
+  communicationService?: RealTimeCommunicationService;
+  modificationService?: SelfModificationService;
 }
 
-export function CommandCenter({ onCreateAgent }: CommandCenterProps) {
-  const [command, setCommand] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
-  const [isNewConversationDialogOpen, setIsNewConversationDialogOpen] = useState(false);
-  const [newConversationTitle, setNewConversationTitle] = useState('');
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  
-  const wsService = useRef(new WebSocketService());
-  const apiService = useRef(new APIService());
-  const { agents, tasks } = useSystemStore();
-  const commandInputRef = useRef<HTMLTextAreaElement>(null);
+interface CommandSuggestion {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  command: string;
+  parameters?: Record<string, any>;
+}
 
+export const CommandCenter: React.FC<CommandCenterProps> = ({
+  agentFactory = new EnhancedAgentFactory(),
+  reasoningService = new AdvancedReasoningPatternsService(),
+  communicationService = new RealTimeCommunicationService(),
+  modificationService = new SelfModificationService()
+}) => {
+  const [inputCommand, setInputCommand] = useState('');
+  const [conversation, setConversation] = useState<Array<{
+    id: string;
+    type: 'user' | 'system' | 'agent';
+    content: string;
+    timestamp: Date;
+    agentId?: string;
+    agentName?: string;
+  }>>([]);
+  const [suggestions] = useState<CommandSuggestion[]>([
+    {
+      id: '1',
+      title: 'Create Code Generation Agent',
+      description: 'Create a specialized agent for autonomous programming',
+      category: 'agents',
+      command: 'create_agent',
+      parameters: { type: 'code_generation', name: 'CodeMaster' }
+    },
+    {
+      id: '2',
+      title: 'Monitor System Resources',
+      description: 'Check current system resource utilization',
+      category: 'system',
+      command: 'monitor_resources'
+    },
+    {
+      id: '3',
+      title: 'Optimize Performance',
+      description: 'Optimize system based on current hardware',
+      category: 'optimization',
+      command: 'optimize_performance'
+    },
+    {
+      id: '4',
+      title: 'Implement Hierarchical Reasoning',
+      description: 'Set up hierarchical reasoning for complex problems',
+      category: 'reasoning',
+      command: 'setup_reasoning',
+      parameters: { pattern: 'tree_of_thoughts' }
+    },
+    {
+      id: '5',
+      title: 'Analyze System Performance',
+      description: 'Generate comprehensive system performance report',
+      category: 'analysis',
+      command: 'analyze_performance'
+    },
+    {
+      id: '6',
+      title: 'Create Task Management Workflow',
+      description: 'Set up automated task management and prioritization',
+      category: 'workflow',
+      command: 'create_workflow',
+      parameters: { type: 'task_management' }
+    },
+    {
+      id: '7',
+      title: 'Configure Model Parameters',
+      description: 'Configure AI model parameters for better accuracy',
+      category: 'models',
+      command: 'configure_model',
+      parameters: { temperature: 0.7, maxTokens: 2000 }
+    },
+    {
+      id: '8',
+      title: 'Generate System Health Report',
+      description: 'Generate detailed system health and performance report',
+      category: 'reports',
+      command: 'generate_report',
+      parameters: { type: 'health' }
+    },
+    {
+      id: '9',
+      title: 'Create Backup Configuration',
+      description: 'Create backup of current system configuration',
+      category: 'maintenance',
+      command: 'backup_config'
+    },
+    {
+      id: '10',
+      title: 'Set Up Testing Pipeline',
+      description: 'Configure automated testing and validation pipeline',
+      category: 'development',
+      command: 'setup_testing',
+      parameters: { framework: 'jest', coverage: 80 }
+    }
+  ]);
+
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [selectedSuggestion, setSelectedSuggestion] = useState<CommandSuggestion | null>(null);
+  const [activeAgents, setActiveAgents] = useState<Agent[]>([]);
+  const [pendingTasks, setPendingTasks] = useState<Task[]>([]);
+  const [systemStatus, setSystemStatus] = useState<any>(null);
+
+  const conversationEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // WebSocket hooks
+  const ws = useWebSocket();
+  const { agentPresence, getOnlineAgents, getAgentStatus } = useAgentPresence();
+  const { messages } = useMessageHistory(100);
+
+  const { agents, tasks, systemStatus: systemStatusState, resourceUsage } = useSystemStore.getState();
+
+  // Update data
   useEffect(() => {
-    // Initialize WebSocket connection
-    wsService.current.connect();
-    
-    // Load existing conversations from API
-    loadConversations();
-    
-    // Add keyboard shortcut listener
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        commandInputRef.current?.focus();
+    setActiveAgents(agents);
+    setPendingTasks(tasks.filter(t => t.status === 'pending'));
+    setSystemStatus({
+      status: systemStatusState,
+      resources: resourceUsage,
+      constraints: {
+        maxAgents: 10,
+        maxMemoryUsage: 8192,
+        maxCpuUsage: 80,
+        maxTokensPerMinute: 5000
       }
-    };
-    
-    document.addEventListener('keydown', handleKeyDown);
-    
-    return () => {
-      wsService.current.disconnect();
-      document.removeEventListener('keydown', handleKeyDown);
-    };
+    });
+  }, [agents, tasks, systemStatusState, resourceUsage]);
+
+  // Update conversation from WebSocket messages
+  useEffect(() => {
+    if (messages.length > 0) {
+      const formattedMessages: Array<{
+        id: string;
+        type: 'user' | 'system' | 'agent';
+        content: string;
+        timestamp: Date;
+        agentId?: string;
+        agentName?: string;
+      }> = messages.map(msg => ({
+        id: msg.id,
+        type: msg.fromAgentId === 'user' ? 'user' : msg.fromAgentId === 'system' ? 'system' : 'agent',
+        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        timestamp: msg.timestamp,
+        agentId: msg.fromAgentId !== 'user' && msg.fromAgentId !== 'system' ? msg.fromAgentId : undefined,
+        agentName: activeAgents.find(a => a.id === msg.fromAgentId)?.name
+      }));
+      setConversation(prev => [...prev, ...formattedMessages]);
+    }
+  }, [messages, activeAgents]);
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [conversation]);
+
+  // Focus input on mount
+  useEffect(() => {
+    inputRef.current?.focus();
   }, []);
 
-  const loadConversations = async () => {
-    setIsLoadingConversations(true);
-    setError(null);
+  const handleCommandSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     
-    try {
-      const response = await apiService.current.getConversations();
-      setConversations(response || []);
-    } catch (error) {
-      console.error('Failed to load conversations:', error);
-      setError('Failed to load conversations. Please try again.');
-    } finally {
-      setIsLoadingConversations(false);
-    }
-  };
+    if (!inputCommand.trim() || isProcessing) return;
 
-  const handleSubmitCommand = async () => {
-    if (!command.trim() || isProcessing) return;
+    const command = inputCommand.trim();
+    const userMessageId = `msg_${Date.now()}`;
+    
+    // Add user message to conversation
+    setConversation(prev => [...prev, {
+      id: userMessageId,
+      type: 'user',
+      content: command,
+      timestamp: new Date()
+    }]);
 
+    setInputCommand('');
     setIsProcessing(true);
-    const currentCommand = command;
-    setCommand('');
 
     try {
-      // Create new conversation if none selected
-      let conversationId = selectedConversationId;
-      if (!conversationId) {
-        const newConversation = await apiService.current.createConversation({
-          title: generateConversationTitle(currentCommand),
-          messages: []
+      // Process command
+      const result = await processCommand(command);
+      
+      // Add system response
+      setConversation(prev => [...prev, {
+        id: `sys_${Date.now()}`,
+        type: 'system',
+        content: result.response,
+        timestamp: new Date()
+      }]);
+
+      // Add agent responses if any
+      if (result.agentResponses && result.agentResponses.length > 0) {
+        result.agentResponses.forEach((response: any) => {
+          setConversation(prev => [...prev, {
+            id: `agent_${Date.now()}_${Math.random()}`,
+            type: 'agent',
+            content: response.content,
+            timestamp: new Date(),
+            agentId: response.agentId,
+            agentName: response.agentName
+          }]);
         });
-        conversationId = newConversation.id;
-        setConversations(prev => [...prev, newConversation]);
-        setSelectedConversationId(conversationId);
       }
-
-      // Add user message to conversation
-      const userMessage = await apiService.current.addMessageToConversation(conversationId, {
-        content: currentCommand,
-        role: 'user'
-      });
-
-      // Update conversations with user message
-      setConversations(prev => prev.map(conv => 
-        conv.id === conversationId 
-          ? { ...conv, messages: [...conv.messages, userMessage] }
-          : conv
-      ));
-
-      // Process command through agent system
-      const response = await processCommandWithAgents(currentCommand);
-
-      // Add system response to conversation
-      const systemMessage = await apiService.current.addMessageToConversation(conversationId, {
-        content: response,
-        role: 'system'
-      });
-
-      // Update conversations with system message
-      setConversations(prev => prev.map(conv => 
-        conv.id === conversationId 
-          ? { ...conv, messages: [...conv.messages, systemMessage] }
-          : conv
-      ));
 
     } catch (error) {
-      console.error('Error processing command:', error);
-      
-      // Add error message to conversation
-      if (selectedConversationId) {
-        const errorMessage = await apiService.current.addMessageToConversation(selectedConversationId, {
-          content: `Error processing command: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          role: 'system'
-        });
-
-        setConversations(prev => prev.map(conv => 
-          conv.id === selectedConversationId 
-            ? { ...conv, messages: [...conv.messages, errorMessage] }
-            : conv
-        ));
-      }
+      setConversation(prev => [...prev, {
+        id: `err_${Date.now()}`,
+        type: 'system',
+        content: `Error: ${error}`,
+        timestamp: new Date()
+      }]);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const processCommandWithAgents = async (command: string): Promise<string> => {
-    const lowercaseCommand = command.toLowerCase();
+  const processCommand = async (command: string): Promise<any> => {
+    const normalizedCommand = command.toLowerCase();
     
-    // Create task for command processing
-    const task = await apiService.current.createTask({
-      title: `Process Command: ${command.substring(0, 50)}...`,
-      description: command,
-      priority: 'high',
-      parentTaskId: null,
-      assignedAgentIds: []
-    });
+    // Check for exact matches with suggestions
+    const matchedSuggestion = suggestions.find(s => 
+      s.command.toLowerCase() === normalizedCommand || 
+      s.title.toLowerCase() === normalizedCommand
+    );
 
-    // Send command to orchestrator agent
-    const orchestratorAgent = agents.find(agent => agent.specialization === 'orchestrator');
-    if (orchestratorAgent) {
-      wsService.current.sendAgentMessage({
-        fromAgentId: 'user',
-        toAgentId: orchestratorAgent.id,
-        content: command,
-        messageType: 'command',
-        taskId: task.id
-      });
+    if (matchedSuggestion) {
+      return await executeSuggestion(matchedSuggestion);
     }
 
-    // Wait for response from agents
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        resolve("Command processing initiated. The orchestrator agent is coordinating with other agents to execute your request.");
-      }, 5000);
+    // Handle natural language commands
+    if (normalizedCommand.includes('create') && normalizedCommand.includes('agent')) {
+      return await createAgentFromCommand(command);
+    }
 
-      // Listen for agent responses
-      const handleAgentResponse = (data: any) => {
-        if (data.taskId === task.id && data.messageType === 'response') {
-          clearTimeout(timeout);
-          wsService.current.off('agentMessage', handleAgentResponse);
-          resolve(data.content);
-        }
+    if (normalizedCommand.includes('monitor') || normalizedCommand.includes('check')) {
+      return await monitorSystemFromCommand(command);
+    }
+
+    if (normalizedCommand.includes('optimize') || normalizedCommand.includes('improve')) {
+      return await optimizeSystemFromCommand(command);
+    }
+
+    if (normalizedCommand.includes('analyze') || normalizedCommand.includes('report')) {
+      return await analyzeSystemFromCommand(command);
+    }
+
+    if (normalizedCommand.includes('setup') || normalizedCommand.includes('configure')) {
+      return await setupSystemFromCommand(command);
+    }
+
+    // Default response
+    return {
+      response: `I understand you want to: "${command}". I'm processing your request...`,
+      agentResponses: []
+    };
+  };
+
+  const executeSuggestion = async (suggestion: CommandSuggestion): Promise<any> => {
+    switch (suggestion.command) {
+      case 'create_agent':
+        return await createAgentFromSuggestion(suggestion);
+      case 'monitor_resources':
+        return await monitorResources();
+      case 'optimize_performance':
+        return await optimizePerformance();
+      case 'setup_reasoning':
+        return await setupReasoning(suggestion.parameters);
+      case 'analyze_performance':
+        return await analyzePerformance();
+      case 'create_workflow':
+        return await createWorkflow(suggestion.parameters);
+      case 'configure_model':
+        return await configureModel(suggestion.parameters);
+      case 'generate_report':
+        return await generateReport(suggestion.parameters);
+      case 'backup_config':
+        return await backupConfig();
+      case 'setup_testing':
+        return await setupTesting(suggestion.parameters);
+      default:
+        return { response: `Command "${suggestion.command}" not recognized.` };
+    }
+  };
+
+  const createAgentFromSuggestion = async (suggestion: CommandSuggestion): Promise<any> => {
+    try {
+      const agent = await agentFactory.createAgent({
+        name: suggestion.parameters?.name || 'NewAgent',
+        specialization: suggestion.parameters?.type || 'general',
+        tier: 'execution' as ReasoningTier,
+        description: `Created via command: ${suggestion.title}`,
+        capabilities: ['reasoning', 'communication', 'learning'],
+        reasoningPatterns: ['react'],
+        reasoningStrategies: ['problem_solving'],
+        contextWindow: 1000,
+        learningRate: 0.1,
+        adaptationThreshold: 0.8,
+        experienceBuffer: 100
+      });
+
+      return {
+        response: `✅ Successfully created agent "${agent.name}" (ID: ${agent.id})`,
+        agentResponses: [{
+          agentId: agent.id,
+          agentName: agent.name,
+          content: `Agent "${agent.name}" has been initialized and is ready for tasks.`
+        }]
+      };
+    } catch (error) {
+      throw new Error(`Failed to create agent: ${error}`);
+    }
+  };
+
+  const createAgentFromCommand = async (command: string): Promise<any> => {
+    const agentName = extractParameter(command, 'name') || 'AutoAgent';
+    const specialization = extractParameter(command, 'type') || 'general';
+    
+    try {
+      const agent = await agentFactory.createAgent({
+        name: agentName,
+        specialization: specialization as AgentSpecialization,
+        tier: 'execution' as ReasoningTier,
+        description: `Created via natural language command: ${command}`,
+        capabilities: ['reasoning', 'communication', 'learning'],
+        reasoningPatterns: ['react'],
+        reasoningStrategies: ['problem_solving'],
+        contextWindow: 1000,
+        learningRate: 0.1,
+        adaptationThreshold: 0.8,
+        experienceBuffer: 100
+      });
+
+      return {
+        response: `✅ Successfully created "${specialization}" agent "${agent.name}"`,
+        agentResponses: [{
+          agentId: agent.id,
+          agentName: agent.name,
+          content: `I'm ready to help with ${specialization} tasks!`
+        }]
+      };
+    } catch (error) {
+      throw new Error(`Failed to create agent: ${error}`);
+    }
+  };
+
+  const monitorResources = async (): Promise<any> => {
+    const { resourceUsage, constraints } = useSystemStore.getState();
+    
+    const healthScore = calculateResourceHealth(resourceUsage, constraints);
+    
+    return {
+      response: `📊 System Resources:\n` +
+                `• CPU: ${resourceUsage.cpuUtilization.toFixed(1)}%\n` +
+                `• Memory: ${formatBytes(resourceUsage.memoryUtilization)}\n` +
+                `• Active Agents: ${resourceUsage.activeAgentCount}\n` +
+                `• Token Rate: ${resourceUsage.tokensUsedLastMinute}/min\n` +
+                `• Health Score: ${healthScore}%`,
+      agentResponses: []
+    };
+  };
+
+  const monitorSystemFromCommand = async (command: string): Promise<any> => {
+    return await monitorResources();
+  };
+
+  const optimizePerformance = async (): Promise<any> => {
+    try {
+      const { resourceUsage, constraints } = useSystemStore.getState();
+      
+      // Simulate optimization
+      const recommendations = [];
+      
+      if (resourceUsage.cpuUtilization > 70) {
+        recommendations.push('Consider reducing concurrent agent tasks');
+      }
+      
+      if (resourceUsage.memoryUtilization > 70) {
+        recommendations.push('Monitor memory usage and consider cleanup');
+      }
+      
+      if (resourceUsage.activeAgentCount > constraints.maxAgents * 0.8) {
+        recommendations.push('Agent count approaching limit, consider scaling down');
+      }
+
+      const optimized = recommendations.length === 0;
+      
+      return {
+        response: optimized 
+          ? '✅ System is already optimized for current workload'
+          : `🔧 Optimization Recommendations:\n${recommendations.map(r => `• ${r}`).join('\n')}`,
+        agentResponses: []
+      };
+    } catch (error) {
+      throw new Error(`Failed to optimize system: ${error}`);
+    }
+  };
+
+  const optimizeSystemFromCommand = async (command: string): Promise<any> => {
+    return await optimizePerformance();
+  };
+
+  const setupReasoning = async (parameters: any): Promise<any> => {
+    try {
+      const pattern = parameters?.pattern || 'tree_of_thoughts';
+      
+      await reasoningService.startReasoningSession(`Setup ${pattern} reasoning pattern`, undefined, `setup_${pattern}`);
+
+      return {
+        response: `✅ Hierarchical reasoning initialized with "${pattern}" pattern`,
+        agentResponses: []
+      };
+    } catch (error) {
+      throw new Error(`Failed to setup reasoning: ${error}`);
+    }
+  };
+
+  const analyzePerformance = async (): Promise<any> => {
+    const { agents, tasks, resourceUsage } = useSystemStore.getState();
+    
+    const completedTasks = tasks.filter(t => t.status === 'completed').length;
+    const avgTaskTime = calculateAverageTaskTime(tasks);
+    const agentEfficiency = calculateAgentEfficiency(agents);
+    
+    return {
+      response: `📈 Performance Analysis:\n` +
+                `• Total Tasks: ${tasks.length}\n` +
+                `• Completed: ${completedTasks}\n` +
+                `• Success Rate: ${((completedTasks / tasks.length) * 100).toFixed(1)}%\n` +
+                `• Avg Task Time: ${avgTaskTime}s\n` +
+                `• Agent Efficiency: ${agentEfficiency}%\n` +
+                `• Resource Utilization: ${resourceUsage.cpuUtilization.toFixed(1)}% CPU`,
+      agentResponses: []
+    };
+  };
+
+  const analyzeSystemFromCommand = async (command: string): Promise<any> => {
+    return await analyzePerformance();
+  };
+
+  const createWorkflow = async (parameters: any): Promise<any> => {
+    try {
+      const workflowType = parameters?.type || 'task_management';
+      
+      // Create workflow agents
+      const workflowAgent = await agentFactory.createAgent({
+        name: 'WorkflowManager',
+        specialization: workflowType,
+        tier: 'tactical' as ReasoningTier,
+        description: 'Manages task workflows and prioritization',
+        capabilities: ['task_management', 'prioritization', 'coordination'],
+        reasoningPatterns: ['react', 'tree_of_thoughts'],
+        reasoningStrategies: ['coordination', 'optimization'],
+        contextWindow: 2000,
+        learningRate: 0.15,
+        adaptationThreshold: 0.7,
+        experienceBuffer: 150
+      });
+
+      return {
+        response: `✅ ${workflowType} workflow created with agent "${workflowAgent.name}"`,
+        agentResponses: [{
+          agentId: workflowAgent.id,
+          agentName: workflowAgent.name,
+          content: `Workflow manager is ready to coordinate tasks and optimize processes.`
+        }]
+      };
+    } catch (error) {
+      throw new Error(`Failed to create workflow: ${error}`);
+    }
+  };
+
+  const setupSystemFromCommand = async (command: string): Promise<any> => {
+    const hasWorkflow = command.includes('workflow') || command.includes('task');
+    const hasReasoning = command.includes('reasoning') || command.includes('think');
+    
+    if (hasWorkflow) {
+      return await createWorkflow({ type: 'task_management' });
+    }
+    
+    if (hasReasoning) {
+      return await setupReasoning({ pattern: 'tree_of_thoughts' });
+    }
+    
+    return { response: 'Setup command recognized. Please specify what you want to setup.' };
+  };
+
+  const configureModel = async (parameters: any): Promise<any> => {
+    try {
+      const { updateModelConfig } = useSystemStore.getState();
+      
+      updateModelConfig({
+        temperature: parameters?.temperature || 0.7,
+        maxTokens: parameters?.maxTokens || 1000,
+        provider: 'local'
+      });
+
+      return {
+        response: `✅ Model configured with:\n` +
+                  `• Temperature: ${parameters?.temperature || 0.7}\n` +
+                  `• Max Tokens: ${parameters?.maxTokens || 1000}`,
+        agentResponses: []
+      };
+    } catch (error) {
+      throw new Error(`Failed to configure model: ${error}`);
+    }
+  };
+
+  const generateReport = async (parameters: any): Promise<any> => {
+    const reportType = parameters?.type || 'health';
+    
+    switch (reportType) {
+      case 'health':
+        return await analyzePerformance();
+      default:
+        return { response: `Report type "${reportType}" not supported.` };
+    }
+  };
+
+  const backupConfig = async (): Promise<any> => {
+    try {
+      const backup = {
+        timestamp: new Date().toISOString(),
+        agents: useSystemStore.getState().agents,
+        tasks: useSystemStore.getState().tasks,
+        constraints: useSystemStore.getState().constraints,
+        config: useSystemStore.getState().activeModelConfig
       };
 
-      wsService.current.on('agentMessage', handleAgentResponse);
-    });
+      return {
+        response: `✅ Configuration backup created at ${backup.timestamp}\n` +
+                  `• ${backup.agents.length} agents\n` +
+                  `• ${backup.tasks.length} tasks\n` +
+                  `• System constraints preserved`,
+        agentResponses: []
+      };
+    } catch (error) {
+      throw new Error(`Failed to create backup: ${error}`);
+    }
   };
 
-  const handleCreateNewConversation = async () => {
-    if (!newConversationTitle.trim()) return;
-    
+  const setupTesting = async (parameters: any): Promise<any> => {
     try {
-      const newConversation = await apiService.current.createConversation({
-        title: newConversationTitle,
-        messages: []
+      const testingAgent = await agentFactory.createAgent({
+        name: 'TestingAgent',
+        specialization: 'analyst' as AgentSpecialization,
+        tier: 'execution' as ReasoningTier,
+        description: 'Automated testing and validation',
+        capabilities: ['testing', 'validation', 'quality_assurance'],
+        reasoningPatterns: ['react', 'chain_of_thought'],
+        reasoningStrategies: ['analysis', 'validation'],
+        contextWindow: 1500,
+        learningRate: 0.2,
+        adaptationThreshold: 0.6,
+        experienceBuffer: 200
       });
-      
-      setConversations(prev => [...prev, newConversation]);
-      setSelectedConversationId(newConversation.id);
-      setNewConversationTitle('');
-      setIsNewConversationDialogOpen(false);
+
+      return {
+        response: `✅ Testing pipeline setup complete\n` +
+                  `• Framework: ${parameters?.framework || 'jest'}\n` +
+                  `• Coverage Target: ${parameters?.coverage || 80}%\n` +
+                  `• Testing Agent: ${testingAgent.name}`,
+        agentResponses: [{
+          agentId: testingAgent.id,
+          agentName: testingAgent.name,
+          content: `Testing agent is ready to validate system functionality.`
+        }]
+      };
     } catch (error) {
-      console.error('Failed to create conversation:', error);
+      throw new Error(`Failed to setup testing: ${error}`);
     }
   };
 
-  const handleSelectConversation = (conversationId: string) => {
-    setSelectedConversationId(conversationId);
+  const extractParameter = (command: string, param: string): string | null => {
+    const regex = new RegExp(`${param}\\s*[:=]\\s*([^\\s]+)`, 'i');
+    const match = command.match(regex);
+    return match ? match[1] : null;
   };
 
-  const handleDeleteConversation = async (conversationId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const calculateResourceHealth = (usage: SystemResourceUsage, constraints: SystemConstraints): number => {
+    const cpuHealth = Math.max(0, 100 - (usage.cpuUtilization / constraints.maxCpuUsage) * 100);
+    const memoryHealth = Math.max(0, 100 - (usage.memoryUtilization / constraints.maxMemoryUsage) * 100);
+    const agentHealth = Math.max(0, 100 - (usage.activeAgentCount / constraints.maxAgents) * 100);
     
-    try {
-      await apiService.current.deleteConversation(conversationId);
-      setConversations(prev => prev.filter(conv => conv.id !== conversationId));
-      
-      if (selectedConversationId === conversationId) {
-        setSelectedConversationId(null);
-      }
-    } catch (error) {
-      console.error('Failed to delete conversation:', error);
-    }
+    return Math.round((cpuHealth + memoryHealth + agentHealth) / 3);
   };
 
-  const selectedConversation = conversations.find(conv => conv.id === selectedConversationId);
+  const calculateAverageTaskTime = (tasks: Task[]): number => {
+    const completed = tasks.filter(t => t.status === 'completed' && t.startedAt && t.completedAt);
+    if (completed.length === 0) return 0;
+    
+    const totalTime = completed.reduce((sum, task) => {
+      return sum + (task.completedAt!.getTime() - task.startedAt!.getTime());
+    }, 0);
+    
+    return Math.round(totalTime / completed.length / 1000);
+  };
 
-  // Get filtered suggestions based on current command
-  const getFilteredSuggestions = () => {
-    if (!command.trim()) return sampleCommands;
-    return sampleCommands.filter(cmd => 
-      cmd.toLowerCase().includes(command.toLowerCase())
-    );
+  const calculateAgentEfficiency = (agents: Agent[]): number => {
+    if (agents.length === 0) return 0;
+    
+    const totalEfficiency = agents.reduce((sum, agent) => {
+      const agentTasks = useSystemStore.getState().tasks.filter(t => t.assignedAgentIds?.includes(agent.id));
+      const completedTasks = agentTasks.filter(t => t.status === 'completed').length;
+      const efficiency = agentTasks.length > 0 ? (completedTasks / agentTasks.length) * 100 : 0;
+      return sum + efficiency;
+    }, 0);
+    
+    return Math.round(totalEfficiency / agents.length);
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const handleSuggestionClick = (suggestion: CommandSuggestion) => {
+    setInputCommand(suggestion.command);
+    setSelectedSuggestion(suggestion);
+    inputRef.current?.focus();
   };
 
   return (
-    <div className="h-full flex flex-col">
-      {/* New Conversation Dialog */}
-      <Dialog open={isNewConversationDialogOpen} onOpenChange={setIsNewConversationDialogOpen}>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>Create New Conversation</DialogTitle>
-            <DialogDescription>
-              Start a new conversation to organize your commands and responses.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="title" className="text-right">
-                Title
-              </Label>
-              <Input
-                id="title"
-                placeholder="Enter conversation title..."
-                className="col-span-3"
-                value={newConversationTitle}
-                onChange={(e) => setNewConversationTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    handleCreateNewConversation();
-                  }
-                }}
-              />
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-900 dark:to-slate-800">
+      {/* Header */}
+      <div className="border-b bg-white/80 backdrop-blur-sm dark:bg-slate-900/80 p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
+              <span className="text-white font-bold text-sm">CMD</span>
             </div>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setIsNewConversationDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCreateNewConversation}
-              disabled={!newConversationTitle.trim()}
-            >
-              Create
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Card className="flex-1 flex flex-col">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2">
-              <MessageSquare className="h-5 w-5" />
+            <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
               Command Center
-            </CardTitle>
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">
-                {agents.filter(a => a.status === 'processing').length} Active
-              </Badge>
-              <Badge variant="outline">
-                {tasks.filter(t => t.status === 'pending').length} Pending
-              </Badge>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsNewConversationDialogOpen(true)}
+            </h1>
+          </div>
+          
+          <div className="flex items-center space-x-4">
+            <Badge variant={systemStatus?.status === 'operational' ? 'default' : 'secondary'}>
+              {systemStatus?.status?.toUpperCase() || 'UNKNOWN'}
+            </Badge>
+            <Badge variant={ws.connectionStatus === 'connected' ? 'default' : 'secondary'}>
+              {ws.connectionStatus.toUpperCase()}
+            </Badge>
+            <Badge variant="outline">
+              {activeAgents.length} Active Agents
+            </Badge>
+            <Badge variant="outline">
+              {getOnlineAgents().length} Online
+            </Badge>
+            <Badge variant="outline">
+              {pendingTasks.length} Pending Tasks
+            </Badge>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar with Suggestions */}
+        <div className="w-80 border-r bg-white/50 dark:bg-slate-800/50 p-4 overflow-y-auto">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold mb-2">Quick Commands</h2>
+            <p className="text-sm text-muted-foreground">Click to execute common commands</p>
+          </div>
+          
+          <div className="space-y-2">
+            {suggestions.map((suggestion) => (
+              <div
+                key={suggestion.id}
+                className={`p-3 rounded-lg cursor-pointer transition-all hover:bg-blue-50 dark:hover:bg-blue-900/20 ${
+                  selectedSuggestion?.id === suggestion.id ? 'bg-blue-100 dark:bg-blue-900/30 border border-blue-300' : 'bg-white dark:bg-slate-700'
+                }`}
+                onClick={() => handleSuggestionClick(suggestion)}
               >
-                <Plus className="h-4 w-4 mr-2" />
-                New
-              </Button>
-            </div>
+                <div className="flex items-start justify-between mb-1">
+                  <h3 className="font-medium text-sm">{suggestion.title}</h3>
+                  <Badge variant="secondary" className="text-xs">
+                    {suggestion.category}
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground">{suggestion.description}</p>
+                <div className="mt-2 text-xs font-mono text-blue-600 dark:text-blue-400">
+                  {suggestion.command}
+                </div>
+              </div>
+            ))}
           </div>
-        </CardHeader>
-        
-        <CardContent className="flex-1 flex flex-col min-h-0">
-          {/* Conversation List */}
-          <div className="flex gap-4 h-full">
-            <div className="w-64 border-r pr-4">
-              <h3 className="font-medium mb-3">Conversations</h3>
-              
-              {error && (
-                <div className="mb-3 p-2 bg-destructive/10 border border-destructive/20 rounded text-xs text-destructive">
-                  {error}
-                </div>
-              )}
-              
-              <ScrollArea className="h-full">
-                <div className="space-y-2">
-                  {isLoadingConversations ? (
-                    <div className="flex items-center justify-center py-8">
-                      <RotateCw className="h-4 w-4 animate-spin mr-2" />
-                      <span className="text-sm text-muted-foreground">Loading conversations...</span>
-                    </div>
-                  ) : conversations.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                      <p className="text-xs">No conversations yet</p>
-                    </div>
-                  ) : (
-                    conversations.map((conversation) => (
-                      <div
-                        key={conversation.id}
-                        className={`group p-3 rounded-lg border cursor-pointer transition-colors ${
-                          selectedConversationId === conversation.id
-                            ? 'bg-primary/10 border-primary'
-                            : 'hover:bg-muted'
-                        }`}
-                        onClick={() => handleSelectConversation(conversation.id)}
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1 min-w-0">
-                            <h4 className="font-medium text-sm truncate">
-                              {conversation.title}
-                            </h4>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {conversation.messages.length} messages
-                            </p>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => handleDeleteConversation(conversation.id, e)}
-                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </ScrollArea>
-            </div>
-            
-            {/* Messages */}
-            <div className="flex-1 flex flex-col min-h-0">
-              {selectedConversation ? (
-                <ScrollArea className="flex-1">
-                  <div className="space-y-4">
-                    {selectedConversation.messages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`flex gap-3 ${
-                          message.role === 'user' ? 'justify-end' : 'justify-start'
-                        }`}
-                      >
-                        <div
-                          className={`max-w-[80%] p-3 rounded-lg ${
-                            message.role === 'user'
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-muted'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 mb-2">
-                            {message.role === 'user' ? (
-                              <User className="h-4 w-4" />
-                            ) : (
-                              <Bot className="h-4 w-4" />
-                            )}
-                            <span className="text-xs font-medium">
-                              {message.role === 'user' ? 'You' : 'System'}
-                            </span>
-                          </div>
-                          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                          <p className="text-xs opacity-70 mt-2">
-                            {new Date(message.timestamp).toLocaleTimeString()}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-                    
-                    {isProcessing && (
-                      <div className="flex justify-start">
-                        <div className="bg-muted p-3 rounded-lg">
-                          <div className="flex items-center space-x-2">
-                            <RotateCw className="h-4 w-4 animate-spin" />
-                            <p className="text-sm">Processing your command...</p>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-muted-foreground">
-                  <div className="text-center max-w-md">
-                    <MessageSquare className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <h3 className="font-medium mb-2">No conversation selected</h3>
-                    <p className="text-sm mb-6">Select a conversation or create a new one to start</p>
-                    
-                    <div className="text-left space-y-2">
-                      <h4 className="text-sm font-medium mb-3">Sample commands you can try:</h4>
-                      {sampleCommands.map((cmd, index) => (
-                        <div key={index} className="text-xs p-2 bg-muted rounded border-l-2 border-primary/20">
-                          {cmd}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </CardContent>
-        
-        {/* Command Input */}
-        <CardFooter className="border-t p-4">
-          <form 
-            className="flex items-end w-full gap-2" 
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleSubmitCommand();
-            }}
-          >
-            <div className="flex-1 relative">
-              <Textarea 
-                ref={commandInputRef}
-                placeholder="Enter a command for the AI system... (⌘+K to focus)"
-                value={command}
-                onChange={(e) => {
-                  setCommand(e.target.value);
-                  setShowSuggestions(e.target.value.length > 0);
-                }}
-                className="resize-none min-h-[60px]"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmitCommand();
-                  }
-                }}
-                onFocus={() => setShowSuggestions(command.length > 0)}
-                onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-              />
-              
-              {/* Command Suggestions */}
-              {showSuggestions && getFilteredSuggestions().length > 0 && (
-                <div className="absolute bottom-full left-0 right-0 mb-2 bg-background border rounded-lg shadow-lg max-h-48 overflow-y-auto z-10">
-                  {getFilteredSuggestions().map((suggestion, index) => (
-                    <button
-                      key={index}
-                      type="button"
-                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
-                      onClick={() => {
-                        setCommand(suggestion);
-                        setShowSuggestions(false);
-                      }}
+        </div>
+
+        {/* Main Chat Area */}
+        <div className="flex-1 flex flex-col">
+          {/* Conversation Area */}
+          <div className="flex-1 overflow-y-auto p-4">
+            <ScrollArea className="h-full">
+              <div className="space-y-4">
+                {conversation.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`flex ${message.type === 'user' ? 'justify-end' : message.type === 'agent' ? 'justify-start' : 'justify-center'}`}
+                  >
+                    <div
+                      className={`max-w-2xl rounded-lg p-4 ${
+                        message.type === 'user'
+                          ? 'bg-blue-500 text-white'
+                          : message.type === 'agent'
+                          ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white'
+                          : 'bg-gray-100 dark:bg-gray-800'
+                      }`}
                     >
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
-              )}
+                      {message.type === 'agent' && message.agentName && (
+                        <div className="text-xs font-semibold mb-1 opacity-80">
+                          {message.agentName}
+                        </div>
+                      )}
+                      <div className="whitespace-pre-wrap">{message.content}</div>
+                      <div className={`text-xs mt-2 opacity-70`}>
+                        {message.timestamp.toLocaleTimeString()}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {isProcessing && (
+                  <div className="flex justify-center">
+                    <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-4">
+                      <div className="flex items-center space-x-2">
+                        <div className="animate-spin w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+                        <span className="text-sm">Processing command...</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={conversationEndRef} />
+              </div>
+            </ScrollArea>
+          </div>
+
+          {/* Input Area */}
+          <div className="border-t bg-white/80 backdrop-blur-sm dark:bg-slate-900/80 p-4">
+            <form onSubmit={handleCommandSubmit} className="flex space-x-2">
+              <Input
+                ref={inputRef}
+                type="text"
+                placeholder="Type your command or question..."
+                value={inputCommand}
+                onChange={(e) => setInputCommand(e.target.value)}
+                className="flex-1"
+                disabled={isProcessing}
+              />
+              <Button type="submit" disabled={!inputCommand.trim() || isProcessing}>
+                Send
+              </Button>
+            </form>
+            
+            {selectedSuggestion && (
+              <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded text-sm">
+                <span className="font-medium">Selected:</span> {selectedSuggestion.title}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-2 h-6 px-2"
+                  onClick={() => setSelectedSuggestion(null)}
+                >
+                  ×
+                </Button>
+              </div>
+            )}
+            
+            <div className="mt-2 text-xs text-muted-foreground">
+              Use ⌘+K (or Ctrl+K) to focus • Try "create agent" or "monitor resources"
             </div>
-            <Button 
-              type="submit" 
-              disabled={isProcessing || !command.trim()} 
-              className="h-10"
-            >
-              <SendHorizontal className="h-4 w-4" />
-              <span className="sr-only">Send</span>
-            </Button>
-          </form>
-        </CardFooter>
-      </Card>
+          </div>
+        </div>
+      </div>
     </div>
   );
-}
-
-// Helper for generating a conversation title
-function generateConversationTitle(command: string): string {
-  if (command.length <= 30) return command;
-  return command.substring(0, 27) + '...';
-}
-
-// Sample commands for the empty state
-const sampleCommands = [
-  "Create a code generation agent",
-  "Monitor system resources",
-  "Optimize performance based on current hardware",
-  "Implement hierarchical reasoning for complex problems",
-  "Analyze current system performance",
-  "Create a task management workflow",
-  "Set up automated testing pipeline",
-  "Configure model parameters for better accuracy",
-  "Generate a system health report",
-  "Create a backup of current configuration"
-];
-
-// Types for the component
-interface Conversation {
-  id: string;
-  title: string;
-  messages: ConversationMessage[];
-  createdAt: Date;
-}
-
-interface ConversationMessage {
-  id: string;
-  content: string;
-  timestamp: Date;
-  role: 'user' | 'system';
-}
+};

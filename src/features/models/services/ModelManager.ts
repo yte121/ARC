@@ -3,6 +3,7 @@ import { useSystemStore } from '@/store/system-store';
 import { APIService } from '@/services/APIService';
 import { LocalModelService } from './LocalModelService';
 import { OpenRouterService } from './OpenRouterService';
+import { ModelFailoverService } from './ModelFailoverService';
 
 /**
  * ModelManager
@@ -12,6 +13,7 @@ import { OpenRouterService } from './OpenRouterService';
 export class ModelManager {
   private localService: LocalModelService;
   private openRouterService: OpenRouterService;
+  private failoverService: ModelFailoverService;
   private apiService: APIService;
   private modelConfig: ModelConfig;
   private constraints: SystemConstraints;
@@ -22,6 +24,7 @@ export class ModelManager {
     this.constraints = store.constraints;
     this.localService = new LocalModelService();
     this.openRouterService = new OpenRouterService();
+    this.failoverService = new ModelFailoverService();
     this.apiService = new APIService();
   }
 
@@ -57,7 +60,7 @@ export class ModelManager {
   }
 
   /**
-   * Generate response using the currently configured model
+   * Generate response using the currently configured model with intelligent failover
    */
   async generateResponse(
     prompt: string,
@@ -67,25 +70,8 @@ export class ModelManager {
   ): Promise<any> {
     this.refreshConfig();
     
-    const useModel = model || this.modelConfig.modelName;
-    const useTemperature = temperature !== undefined ? temperature : this.modelConfig.temperature;
-    const useMaxTokens = maxTokens || this.modelConfig.maxTokens;
-    
-    try {
-      // Try primary model first
-      return await this.generateWithProvider(
-        this.modelConfig.provider,
-        prompt,
-        useModel,
-        useTemperature,
-        useMaxTokens
-      );
-    } catch (error) {
-      console.warn(`Primary model failed, attempting failover:`, error);
-      
-      // Attempt failover to alternative providers
-      return await this.attemptFailover(prompt, useModel, useTemperature, useMaxTokens);
-    }
+    // Use the failover service for intelligent model selection
+    return await this.failoverService.generateResponse(prompt, model, temperature, maxTokens);
   }
 
   /**
@@ -280,5 +266,54 @@ export class ModelManager {
       isValid: errors.length === 0,
       errors
     };
+  }
+
+  /**
+   * Get model health status from failover service
+   */
+  getModelHealthStatus(): any[] {
+    return this.failoverService.getHealthStatus();
+  }
+
+  /**
+   * Get performance metrics from failover service
+   */
+  getModelPerformanceMetrics(): any {
+    return this.failoverService.getPerformanceMetrics();
+  }
+
+  /**
+   * Update failover configuration
+   */
+  updateFailoverConfig(config: any): void {
+    this.failoverService.updateFailoverConfig(config);
+  }
+
+  /**
+   * Get current failover configuration
+   */
+  getFailoverConfig(): any {
+    return this.failoverService.getFailoverConfig();
+  }
+
+  /**
+   * Force health check for a specific provider
+   */
+  async forceHealthCheck(provider: string): Promise<void> {
+    await this.failoverService.forceHealthCheck(provider as any);
+  }
+
+  /**
+   * Get recommended provider based on current conditions
+   */
+  getRecommendedProvider(): string {
+    return this.failoverService.getRecommendedProvider();
+  }
+
+  /**
+   * Shutdown the failover service
+   */
+  shutdownFailoverService(): void {
+    this.failoverService.shutdown();
   }
 }
